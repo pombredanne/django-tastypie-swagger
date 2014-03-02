@@ -17,6 +17,34 @@ ALL = 1
 # Enable all ORM filters, including across relationships
 ALL_WITH_RELATIONS = 2
 
+DJANGO_FIELD_TYPE = {
+    'AutoField': 'int',
+    'BigIntegerField': 'int',
+    'BinaryField': 'string',
+    'BooleanField': 'bool',
+    'CharField': 'string',
+    'CommaSeparatedIntegerField': 'int',
+    'DateField': 'date',
+    'DateTimeField': 'datetime',
+    'DecimalField': 'decimal',
+    'EmailField': 'string',
+    'FileField': 'string',
+    'FilePathField': 'string',
+    'FloatField': 'float',
+    'ImageField': 'string',
+    'IntegerField': 'int',
+    'IPAddressField': 'string',
+    'GenericIPAddressField': 'string',
+    'NullBooleanField': 'bool',
+    'PositiveIntegerField': 'int',
+    'PositiveSmallIntegerField': 'int',
+    'SlugField': 'string',
+    'SmallIntegerField': 'int',
+    'TextField': 'int',
+    'TimeField': 'time',
+    'URLField': 'string'
+}
+
 class ResourceSwaggerMapping(object):
     """
     Represents a mapping of a tastypie resource to a swagger API declaration
@@ -40,7 +68,21 @@ class ResourceSwaggerMapping(object):
     def __init__(self, resource):
         self.resource = resource
         self.resource_name = self.resource._meta.resource_name
+        self.resource_pk_type = self.get_pk_type()
         self.schema = self.resource.build_schema()
+
+    def get_pk_type(self):
+        django_internal_type = self.resource._meta.object_class._meta.pk.get_internal_type()
+        if django_internal_type in ('ManyToManyField', 'OneToOneField', 'ForeignKey'):
+            return DJANGO_FIELD_TYPE.get(self.resource._meta.object_class._meta.pk.related_field, 'unknown')
+        else:
+            return DJANGO_FIELD_TYPE.get(django_internal_type, 'unknown')
+
+    def get_related_field_type(self, field_name):
+        for field in self.resource._meta.object_class._meta.fields:
+            if field_name == field.name:
+                 return DJANGO_FIELD_TYPE.get(field.related_field.get_internal_type(), 'unknown')
+
 
     def get_resource_verbose_name(self, plural=False):
         qs = self.resource._meta.queryset
@@ -91,7 +133,7 @@ class ResourceSwaggerMapping(object):
 #            parameter.update({'allowableValues': allowed_values})
         return parameter
 
-    def build_parameters_from_fields(self):   
+    def build_parameters_from_fields(self):
         parameters = []
         for name, field in self.schema['fields'].items():
             # Ignore readonly fields
@@ -148,64 +190,68 @@ class ResourceSwaggerMapping(object):
                 ))
         if 'filtering' in self.schema and method.upper() == 'GET':
             for name, field in self.schema['filtering'].items():
-                # Integer value means this points to a related model
-                if field in [ALL, ALL_WITH_RELATIONS]:
-                    if field == ALL: #TODO: Show all possible ORM filters for this field
-                        #This code has been mostly sucked from the tastypie lib
-                        if getattr(self.resource._meta, 'queryset', None) is not None:
-                            # Get the possible query terms from the current QuerySet.
-                            if hasattr(self.resource._meta.queryset.query.query_terms, 'keys'):
-                                # Django 1.4 & below compatibility.
-                                field = self.resource._meta.queryset.query.query_terms.keys()
+                # Avoid infinite recursion for self referencing resource (issue #22)
+                if not prefix.startswith('{}__'.format(name)):
+                    # Integer value means this points to a related model
+                    if field in [ALL, ALL_WITH_RELATIONS]:
+                        if field == ALL:
+                            #This code has been mostly sucked from the tastypie lib
+                            if getattr(self.resource._meta, 'queryset', None) is not None:
+                                # Get the possible query terms from the current QuerySet.
+                                if hasattr(self.resource._meta.queryset.query.query_terms, 'keys'):
+                                    # Django 1.4 & below compatibility.
+                                    field = self.resource._meta.queryset.query.query_terms.keys()
+                                else:
+                                    # Django 1.5+.
+                                    field = self.resource._meta.queryset.query.query_terms
                             else:
-                                # Django 1.5+.
-                                field = self.resource._meta.queryset.query.query_terms
-                        else:
-                            if hasattr(QUERY_TERMS, 'keys'):
-                                # Django 1.4 & below compatibility.
-                                field = QUERY_TERMS.keys()
+                                if hasattr(QUERY_TERMS, 'keys'):
+                                    # Django 1.4 & below compatibility.
+                                    field = QUERY_TERMS.keys()
+                                else:
+                                    # Django 1.5+.
+                                    field = QUERY_TERMS
+
+                        elif field == ALL_WITH_RELATIONS: # Show all params from related model
+                            # Add a subset of filter only foreign-key compatible on the relation itself.
+                            # We assume foreign keys are only int based.
+                            field = ['gt','in','gte', 'lt', 'lte','exact'] # TODO This could be extended by checking the actual type of the relational field, but afaik it's also an issue on tastypie.
+                            related_resource = self.resource.fields[name].get_related_resource(None)
+                            related_mapping = ResourceSwaggerMapping(related_resource)
+
+                            parameters.extend(related_mapping.build_parameters_from_filters(prefix="%s%s__" % (prefix, name)))
+
+                    if isinstance(field, (list, tuple, set)):
+                        # Skip if this is an incorrect filter
+                        if name not in self.schema['fields']: continue
+
+                        schema_field = self.schema['fields'][name]
+
+                        dataType = schema_field['type']
+                        if dataType == 'related':
+                            dataType = self.get_related_field_type(name)
+                            description = 'ID of related resource'
+
+                        for query in field:
+                            if query == 'exact':
+                                description = force_unicode(schema_field['help_text'])
+
+                                # Use a better description for related models with exact filter
+                                parameters.append(self.build_parameter(
+                                    paramType="query",
+                                    name="%s%s" % (prefix, name),
+                                    dataType=dataType,
+                                    required= False,
+                                    description=description,
+                                ))
                             else:
-                                # Django 1.5+.
-                                field = QUERY_TERMS
-
-                    elif field == ALL_WITH_RELATIONS: # Show all params from related model
-                        # Add a subset of filter only foreign-key compatible on the relation itself.
-                        # We assume foreign keys are only int based.
-                        field = ['gt','in','gte', 'lt', 'lte','exact'] # TODO This could be extended by checking the actual type of the relational field, but afaik it's also an issue on tastypie.
-                        related_resource = self.resource.fields[name].get_related_resource(None)
-                        related_mapping = ResourceSwaggerMapping(related_resource)
-                        parameters.extend(related_mapping.build_parameters_from_filters(prefix="%s%s__" % (prefix, name)))
-
-                if isinstance( field, list ):
-                    # Skip if this is an incorrect filter
-                    if name not in self.schema['fields']: continue
-
-                    schema_field = self.schema['fields'][name]
-                    for query in field:
-                        if query == 'exact':
-                            description = force_unicode(schema_field['help_text'])
-                            dataType = schema_field['type']
-                            # Use a better description for related models with exact filter
-                            if dataType == 'related':
-                                # Assume that related pk is an integer
-                                # TODO if youre not using integer ID for pk then we need to look this up somehow
-                                dataType = 'integer'
-                                description = 'ID of related resource'
-                            parameters.append(self.build_parameter(
-                                paramType="query",
-                                name="%s%s" % (prefix, name),
-                                dataType=dataType,
-                                required= False,
-                                description=description,
-                            ))
-                        else:
-                            parameters.append(self.build_parameter(
-                                paramType="query",
-                                name="%s%s__%s" % (prefix, name, query),
-                                dataType=schema_field['type'],
-                                required= False,
-                                description=force_unicode(schema_field['help_text']),
-                            ))
+                                parameters.append(self.build_parameter(
+                                    paramType="query",
+                                    name="%s%s__%s" % (prefix, name, query),
+                                    dataType=dataType,
+                                    required= False,
+                                    description=force_unicode(schema_field['help_text']),
+                                ))
 
         return parameters
 
@@ -222,18 +268,36 @@ class ResourceSwaggerMapping(object):
         detail_uri_name = getattr(self.resource._meta, "detail_uri_name", "pk")
         return detail_uri_name == "pk" and "id" or detail_uri_name
 
-    def build_parameters_from_extra_action(self, method, fields):
+    def build_parameters_from_extra_action(self, method, fields, resource_type):
         parameters = []
-        if method.upper() == 'GET':
-            parameters.append(self.build_parameter(paramType='path', name=self._detail_uri_name(), dataType='int', description='ID of resource'))
+        if resource_type == "view":
+            parameters.append(self.build_parameter(paramType='path',
+                name=self._detail_uri_name(),
+                dataType=self.resource_pk_type,
+                description='Primary key of resource'))
         for name, field in fields.items():
             parameters.append(self.build_parameter(
                 paramType="query",
                 name=name,
-                dataType=field['type'],
-                required=field['required'],
-                description=force_unicode(field['description']),
+                dataType=field.get("type", "string"),
+                required=field.get("required", True),
+                description=force_unicode(field.get("description", "")),
             ))
+
+        # For non-standard API functionality, allow the User to declaritively
+        # define their own filters, along with Swagger endpoint values.
+        # Minimal error checking here. If the User understands enough to want to
+        # do this, assume that they know what they're doing.
+        if hasattr(self.resource.Meta, 'custom_filtering'):
+            for name, field in self.resource.Meta.custom_filtering.items():
+                parameters.append(self.build_parameter(
+                        paramType = 'query',
+                        name = name,
+                        dataType = field['dataType'],
+                        required = field['required'],
+                        description = unicode(field['description'])
+                        ))
+
 
         return parameters
 
@@ -241,7 +305,14 @@ class ResourceSwaggerMapping(object):
         operation = {
             'summary': self.get_operation_summary(detail=True, method=method),
             'httpMethod': method.upper(),
-            'parameters': [self.build_parameter(paramType='path', name=self._detail_uri_name(), dataType='int', description='ID of resource')],
+            'parameters': [
+                self.build_parameter(
+                    paramType='path',
+                    name=self._detail_uri_name(),
+                    dataType=self.resource_pk_type,
+                    description='Primary key of resource'
+                ),
+            ],
             'responseClass': self.resource_name,
             'nickname': '%s-detail' % self.resource_name,
             'notes': self.resource.__doc__,
@@ -259,9 +330,17 @@ class ResourceSwaggerMapping(object):
         }
 
     def build_extra_operation(self, extra_action):
+        if "name" not in extra_action:
+            raise LookupError("\"name\" is a required field in extra_actions.")
         return {
-            'httpMethod': extra_action['http_method'].upper(),
-            'parameters': self.build_parameters_from_extra_action(method=extra_action.get('http_method'), fields=extra_action.get('fields')),
+            'summary': extra_action.get("summary", ""),
+            'httpMethod': extra_action.get('http_method', "get").upper(),
+            'parameters': self.build_parameters_from_extra_action(
+                method=extra_action.get('http_method'),
+                # Default fields to an empty dictionary in the case that it
+                # is not set.
+                fields=extra_action.get('fields', {}),
+                resource_type=extra_action.get("resource_type", "view")),
             'responseClass': 'Object', #TODO this should be extended to allow the creation of a custom object.
             'nickname': extra_action['name'],
         }
@@ -310,6 +389,10 @@ class ResourceSwaggerMapping(object):
                     'path': "%s{%s}/%s/" % (self.get_resource_base_uri(), identifier , extra_action.get('name')),
                     'operations': []
                 }
+
+                if extra_action.get("resource_type", "view") == "list":
+                    extra_api['path'] = "%s%s/" % (self.get_resource_base_uri(), extra_action.get('name'))
+
                 operation = self.build_extra_operation(extra_action)
                 extra_api['operations'].append(operation)
                 extra_apis.append(extra_api)
@@ -467,6 +550,3 @@ class ResourceSwaggerMapping(object):
             )
         )
         return models
-
-
-
