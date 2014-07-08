@@ -1,3 +1,12 @@
+.. Django Tastypie Swagger documentation master file, created by
+   sphinx-quickstart on Mon Mar  3 16:00:08 2014.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+Welcome to Django Tastypie Swagger's documentation!
+===================================================
+
+
 Synopsis
 ========
 
@@ -27,7 +36,7 @@ Add to INSTALLED_APPS::
     ]
 
 
-You can enable documentation for several different api endpoints.
+Enable documentation for an api endpoint by adding a URL to your urlpatterns.
 
 eg::
 
@@ -43,8 +52,13 @@ eg::
         ...
     )
 
+- The ``namespace`` is repeated on purpose to go around some limitations and should be unique amongst the other
+urls you have defined.
 
-To declare more than one endpoint just repeat the above and make sure to change the namespace.
+- The ``tastypie_api_module`` is either your tastypie api instance or a string containing the full path to your
+tastypie api instance.
+
+To declare more than one endpoint, repeat the above URL definition and change the namespace.
 
 Swagger documentation will be served up at the URL(s) you configured.
 
@@ -125,7 +139,28 @@ Tastypie 0.9.11 **ModelResource** fields do not respect the *blank* attribute on
 You can use `this ModelResource subclass <https://gist.github.com/4041352>`_ as a workaround to this issue.
 
 
+License
+==========
 
+Copyright © Concentric Sky, Inc. 
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+
+About Concentric Sky
+====================
+
+For nearly a decade, Concentric Sky has been building technology solutions that impact people everywhere. We work in the mobile, enterprise and web application spaces. Our team, based in Eugene Oregon, loves to solve complex problems. Concentric Sky believes in contributing back to our community and one of the ways we do that is by open sourcing our code on GitHub. Contact Concentric Sky at hello@concentricsky.com.
 
 
 .. _Swagger: http://swagger.wordnik.com/
@@ -135,3 +170,11 @@ You can use `this ModelResource subclass <https://gist.github.com/4041352>`_ as 
 .. _Swagger UI: https://github.com/wordnik/swagger-ui
 .. _tastypie.api.Api: https://django-tastypie.readthedocs.org/en/latest/api.html
 .. _Joshua Kehn: mailto:josh@kehn.us
+
+
+.. toctree::
+   :maxdepth: 2
+
+
+
+

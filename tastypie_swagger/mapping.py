@@ -1,12 +1,14 @@
 import datetime
-from django.core.urlresolvers import reverse
+import logging
+
 from django.db.models.sql.constants import QUERY_TERMS
 from django.utils.encoding import force_unicode
+
 from tastypie import fields
 
 from .utils import trailing_slash_or_none, urljoin_forced
 
-
+logger = logging.getLogger(__name__)
 # Ignored POST fields
 IGNORED_FIELDS = ['id', ]
 
@@ -16,34 +18,6 @@ IGNORED_FIELDS = ['id', ]
 ALL = 1
 # Enable all ORM filters, including across relationships
 ALL_WITH_RELATIONS = 2
-
-DJANGO_FIELD_TYPE = {
-    'AutoField': 'int',
-    'BigIntegerField': 'int',
-    'BinaryField': 'string',
-    'BooleanField': 'bool',
-    'CharField': 'string',
-    'CommaSeparatedIntegerField': 'int',
-    'DateField': 'date',
-    'DateTimeField': 'datetime',
-    'DecimalField': 'decimal',
-    'EmailField': 'string',
-    'FileField': 'string',
-    'FilePathField': 'string',
-    'FloatField': 'float',
-    'ImageField': 'string',
-    'IntegerField': 'int',
-    'IPAddressField': 'string',
-    'GenericIPAddressField': 'string',
-    'NullBooleanField': 'bool',
-    'PositiveIntegerField': 'int',
-    'PositiveSmallIntegerField': 'int',
-    'SlugField': 'string',
-    'SmallIntegerField': 'int',
-    'TextField': 'int',
-    'TimeField': 'time',
-    'URLField': 'string'
-}
 
 class ResourceSwaggerMapping(object):
     """
@@ -71,18 +45,27 @@ class ResourceSwaggerMapping(object):
         self.resource_pk_type = self.get_pk_type()
         self.schema = self.resource.build_schema()
 
-    def get_pk_type(self):
-        django_internal_type = self.resource._meta.object_class._meta.pk.get_internal_type()
-        if django_internal_type in ('ManyToManyField', 'OneToOneField', 'ForeignKey'):
-            return DJANGO_FIELD_TYPE.get(self.resource._meta.object_class._meta.pk.related_field, 'unknown')
+    def _get_native_field_type(self, field):
+        if not field:
+            logger.warning('No id field found for resource:{0}'.format(self.resource))
+            return 'undefined'
+        elif getattr(field, 'is_related', False) and field.is_related:
+            if getattr(field, 'is_m2m', False) and field.is_m2m:
+                return 'list'
+            else:
+                related_id_field = field.to_class.base_fields.get('id')
+                if related_id_field:
+                    return related_id_field.dehydrated_type
         else:
-            return DJANGO_FIELD_TYPE.get(django_internal_type, 'unknown')
+            return field.dehydrated_type
 
-    def get_related_field_type(self, field_name):
-        for field in self.resource._meta.object_class._meta.fields:
-            if field_name == field.name:
-                 return DJANGO_FIELD_TYPE.get(field.related_field.get_internal_type(), 'unknown')
+    def get_pk_type(self):
+        return self._get_native_field_type(getattr(self.resource, 'id', self.resource.fields.get('id', None)))
 
+    def get_related_field_type(self, related_field_name):
+        for field_name, field in self.resource.base_fields.items():
+            if related_field_name == field_name:
+                return self._get_native_field_type(field)
 
     def get_resource_verbose_name(self, plural=False):
         qs = self.resource._meta.queryset
@@ -122,7 +105,7 @@ class ResourceSwaggerMapping(object):
         parameter = {
             'paramType': paramType,
             'name': name,
-            'dataType': dataType,
+            'dataType': dataType if dataType is not None else 'unknown',
             'required': required,
             'description': description,
         }
@@ -191,7 +174,7 @@ class ResourceSwaggerMapping(object):
         if 'filtering' in self.schema and method.upper() == 'GET':
             for name, field in self.schema['filtering'].items():
                 # Avoid infinite recursion for self referencing resource (issue #22)
-                if not prefix.startswith('{}__'.format(name)):
+                if not prefix.find('{0}__'.format(name)) >= 0:
                     # Integer value means this points to a related model
                     if field in [ALL, ALL_WITH_RELATIONS]:
                         if field == ALL:
